@@ -9,6 +9,7 @@ import java.util.Iterator;
 
 import org.apache.poi.hssf.usermodel.HSSFDateUtil;
 import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.DateUtil;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
@@ -36,20 +37,24 @@ import com.filenet.api.util.Id;
 import com.ibm.casemgmt.api.Case;
 import com.ibm.casemgmt.api.CaseType;
 import com.ibm.casemgmt.api.constants.ModificationIntent;
+import com.ibm.casemgmt.api.context.CaseMgmtContext;
+import com.ibm.casemgmt.api.context.P8ConnectionCache;
+import com.ibm.casemgmt.api.context.SimpleP8ConnectionCache;
+import com.ibm.casemgmt.api.context.SimpleVWSessionCache;
 import com.ibm.casemgmt.api.objectref.ObjectStoreReference;
 import com.ibm.casemgmt.api.properties.CaseMgmtProperties;
 
 public class DocumentsEventHandler implements EventActionHandler {
 	public void onEvent(ObjectChangeEvent event, Id subId) {
 		System.out.println("Inside onEvent method");
+		CaseMgmtContext origCmctx = null;
 		try {
-			// As a best practice, fetch the persisted source object of the
-			// event,
-			// filtered on the two required properties, Owner and Name.
+			P8ConnectionCache connCache = new SimpleP8ConnectionCache();
+			origCmctx = CaseMgmtContext.set(new CaseMgmtContext(new SimpleVWSessionCache(), connCache));
 			ObjectStore os = event.getObjectStore();
-			System.out.println("OS"+os);
+			System.out.println("OS" + os);
 			ObjectStoreReference targetOsRef = new ObjectStoreReference(os);
-			System.out.println("TOS"+targetOsRef);
+			System.out.println("TOS" + targetOsRef);
 			Id id = event.get_SourceObjectId();
 			FilterElement fe = new FilterElement(null, null, null, "Owner Name", null);
 			PropertyFilter pf = new PropertyFilter();
@@ -58,7 +63,7 @@ public class DocumentsEventHandler implements EventActionHandler {
 			pf.addIncludeProperty(new FilterElement(null, null, null, PropertyNames.FOLDERS_FILED_IN, null));
 			pf.addIncludeProperty(fe);
 			Document doc = Factory.Document.fetchInstance(os, id, pf);
-			System.out.println("Document Name"+doc.get_Name());
+			System.out.println("Document Name" + doc.get_Name());
 			ContentElementList docContentList = doc.get_ContentElements();
 			Iterator iter = docContentList.iterator();
 			while (iter.hasNext()) {
@@ -78,7 +83,12 @@ public class DocumentsEventHandler implements EventActionHandler {
 						Cell cell = cellIterator.next();
 						headerValue = cell.getStringCellValue();
 						if (headerValue.contains("*")) {
-							headerValue = headerValue.replaceAll("\\* *\\([^)]*\\) *", "").trim();
+							if (headerValue.contains("datetime")) {
+								headerValue = headerValue.replaceAll("\\* *\\([^)]*\\) *", "").trim();
+								headerValue += "dateField";
+							} else {
+								headerValue = headerValue.replaceAll("\\* *\\([^)]*\\) *", "").trim();
+							}
 						}
 						if (headerValue.contains("datetime")) {
 							headerValue = headerValue.replaceAll("\\([^)]*\\) *", "").trim();
@@ -93,18 +103,17 @@ public class DocumentsEventHandler implements EventActionHandler {
 					if (row.getRowNum() == 0) {
 						cell1.setCellValue("Status");
 					}
-					
+
 				}
 				System.out.println("CaseType Creation");
-				CaseType caseType = CaseType.getFetchlessInstance(targetOsRef, doc.get_Name());
-				System.out.println("Rights"+caseType.hasInstanceCreationRights());
+				CaseType caseType = CaseType.fetchInstance(targetOsRef, doc.get_Name());
+				System.out.println("Rights" + caseType.hasInstanceCreationRights());
 				while (rowIterator.hasNext()) {
 					Row row = rowIterator.next();
 					int colNum = 0;
 					String caseId = "";
 					try {
 						Case pendingCase = Case.createPendingInstance(caseType);
-						System.out.println("Property Present"+pendingCase.getProperties().isPropertyPresent("LA_Salary"));
 						CaseMgmtProperties caseMgmtProperties = pendingCase.getProperties();
 						for (int i = 0; i < row.getLastCellNum(); i++) {
 							Cell cell = row.getCell(i, Row.CREATE_NULL_AS_BLANK);
@@ -113,17 +122,21 @@ public class DocumentsEventHandler implements EventActionHandler {
 									colNum++;
 								} else {
 									if (headers.get(colNum).contains("dateField")) {
-										String symName = headers.get(colNum).replace("dateField", "");
+										System.out.println("Date Field");
+										if (cell.getCellType() == Cell.CELL_TYPE_NUMERIC
+												&& DateUtil.isCellDateFormatted(cell)) {
+											System.out.println("Date Formatted");
+											String symName = headers.get(colNum).replace("dateField", "");
 											Date date = cell.getDateCellValue();
-											System.out.println("Key"+symName+"Value"+date.toString());
+											System.out.println("Key" + symName + "Value" + date.toString());
 											caseMgmtProperties.putObjectValue(symName, date);
-											System.out.println("After date Properties");
 											colNum++;
+										} else {
+											colNum++;
+										}
 									} else {
-										System.out.println("Key1"+headers.get(colNum)+"Value1"+getCharValue(cell));
-										caseMgmtProperties.putObjectValue(headers.get(colNum++),
-												getCharValue(cell));
-										System.out.println("After Properties");
+										System.out.println("Key1" + headers.get(colNum) + "Value1" + getCharValue(cell));
+										caseMgmtProperties.putObjectValue(headers.get(colNum++), getCharValue(cell));
 									}
 								}
 							} catch (Exception e) {
@@ -167,7 +180,7 @@ public class DocumentsEventHandler implements EventActionHandler {
 					}
 					String folderPath = folder.get_PathName();
 					folderPath += " Response";
-					System.out.println("Folder path"+folderPath);
+					System.out.println("Folder path" + folderPath);
 					Folder responseFolder = Factory.Folder.fetchInstance(os, folderPath, null);
 					System.out.println("Before Document Save");
 					Document updateDoc = updateDocument(os, is, doc, docTitle);
@@ -195,6 +208,8 @@ public class DocumentsEventHandler implements EventActionHandler {
 			System.out.println(e);
 			e.printStackTrace();
 			throw new RuntimeException(e);
+		} finally {
+			CaseMgmtContext.set(origCmctx);
 		}
 	}
 
@@ -206,8 +221,7 @@ public class DocumentsEventHandler implements EventActionHandler {
 		ContentTransfer contentTransfer = Factory.ContentTransfer.createInstance();
 		contentTransfer.setCaptureSource(is);
 		contentTransfer.set_RetrievalName(docTitle + ".xlsx");
-		contentTransfer
-				.set_ContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+		contentTransfer.set_ContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
 		contentList.add(contentTransfer);
 
 		updateDoc.set_ContentElements(contentList);
